@@ -1,4 +1,4 @@
-const { Client, Collection, Events, GatewayIntentBits } = require('discord.js');
+const { Client, Collection, Events, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -31,27 +31,26 @@ for (const file of slashcommandFiles) {
 	client.commands.set(command.data.name, command);
 }
 
-import {
-  Client,
-  GatewayIntentBits,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  Events,
-} from "discord.js";
-import fs from "fs"; 
+//イベントコマンド
+const eventsPath = path.join(__dirname, 'events');
+const eventsFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
 
-const intents = [
-  GatewayIntentBits.Guilds,
-  GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent,
-  GatewayIntentBits.GuildMembers,
-];
+for (const file of eventsFiles) {
+	const eventfilePath = path.join(eventsPath, file);
+	const event = require(eventfilePath);
+  if (event.once) {
+		client.once(event.name, (...args) => event.execute(...args));
+	} else {
+		client.on(event.name, (...args) => event.execute(...args));
+	}
+  console.log(`-> [Loaded Event] ${file.split('.')[0]}`);
+}
 
-const client = new Client({
-  intents: intents,
+client.once(Events.ClientReady, () => {
+  console.log('Bot is online!');
 });
 
+// データファイルパス
 const dataFilePath = './thread_creators.json';
 
 function loadThreadCreators() {
@@ -78,10 +77,6 @@ function getThreadCreator(threadId) {
   return data[threadId];
 }
 
-client.once(Events.ClientReady, () => {
-  console.log('Bot is online!');
-});
-
 // スレッド作成に反応するロールID
 const triggerRoleIds = [
   "1174906387655041099", //カザネ鯖ロールID オープン募集
@@ -93,7 +88,6 @@ const triggerRoleIds = [
   "1174908489341075537", //他ゲーム募集
   "1174908272415887401", //雑談募集
   "1321113824924794974", //カザクラ
-  
 ];
 
 client.on("messageCreate", async (message) => {
@@ -109,7 +103,7 @@ client.on("messageCreate", async (message) => {
       const replyMessage = await message.reply({
         content: "募集要項をメンションの後に付け足して再度メッセージを送信してください。",
       });
-      setTimeout(() => replyMessage.delete(), 5000); // 5秒後に削除
+      setTimeout(() => replyMessage.delete(), 10000); // 5秒後に削除
       return;
     }
 
@@ -146,95 +140,74 @@ client.on("messageCreate", async (message) => {
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
-    if (!interaction.isButton()) return;
+    if (interaction.isChatInputCommand()) {
+      const command = interaction.client.commands.get(interaction.commandName);
 
-    const { customId, channel, user } = interaction;
-
-    if (!channel || !channel.isThread()) {
-      console.error('スレッドが存在しません');
-      return;
-    }
-
-    const thread = channel; 
-    const creatorId = getThreadCreator(thread.id);
-
-    if (!creatorId) {
-      await interaction.reply({ content: 'このスレッドの作成者情報が見つかりませんでした。', ephemeral: true });
-      return;
-    }
-
-    if (interaction.user.id === creatorId) {
-      if (customId === 'rename_thread') {
-        await interaction.reply({ content: '新しいスレッド名をこのスレッドに送信してください。30秒後に自動的にキャンセルされます。', ephemeral: true });
-
-        const filter = response => response.author.id === user.id;
-        const collected = await channel.awaitMessages({ filter, max: 1, time: 30000 });
-
-        if (collected.size > 0) {
-          const newName = collected.first().content;
-          await thread.setName(newName);
-
-          console.log(`スレッド名が変更されました: 新しいスレッド名 = ${newName}`);
-
-          await interaction.followUp({ content: `スレッド名が「${newName}」に変更されました。`, ephemeral: true });
-        } else {
-          await interaction.followUp({ content: 'スレッド名の変更がキャンセルされました。変更する場合はもう一度「スレッド名を変更」ボタンを押してください。', ephemeral: true });
-        }
-      } else if (customId === 'delete_thread') {
-        const confirmationRow = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId('confirm_delete_thread')
-              .setLabel('削除します')
-              .setStyle(ButtonStyle.Danger)
-          );
-
-        await interaction.reply({ content: '本当にスレッドを削除しますか？この操作は取り消せません。', components: [confirmationRow], ephemeral: true });
-      } else if (customId === 'confirm_delete_thread') {
-        await thread.delete();
-        await interaction.reply({ content: 'スレッドが削除されました。', ephemeral: true });
+      if (!command) {
+        console.error(`No command matching ${interaction.commandName} was found.`);
+        return;
       }
-    } else {
-      await interaction.reply({ content: 'あなたにはこの操作を行う権限がありません。', ephemeral: true });
+
+      try {
+        await command.execute(client, interaction);
+      } catch (error) {
+        console.error(error);
+        await interaction.reply({ content: 'コマンドがありません', ephemeral: true });
+      }
+    } else if (interaction.isButton()) {
+      const { customId, channel, user } = interaction;
+
+      if (!channel || !channel.isThread()) {
+        console.error('スレッドが存在しません');
+        return;
+      }
+
+      const thread = channel; 
+      const creatorId = getThreadCreator(thread.id);
+
+      if (!creatorId) {
+        await interaction.reply({ content: 'このスレッドの作成者情報が見つかりませんでした。', ephemeral: true });
+        return;
+      }
+
+      if (interaction.user.id === creatorId) {
+        if (customId === 'rename_thread') {
+          await interaction.reply({ content: '新しいスレッド名をこのスレッドに送信してください。30秒後に自動的にキャンセルされます。', ephemeral: true });
+
+          const filter = response => response.author.id === user.id;
+          const collected = await channel.awaitMessages({ filter, max: 1, time: 30000 });
+
+          if (collected.size > 0) {
+            const newName = collected.first().content;
+            await thread.setName(newName);
+
+            console.log(`スレッド名が変更されました: 新しいスレッド名 = ${newName}`);
+
+            await interaction.followUp({ content: `スレッド名が「${newName}」に変更されました。`, ephemeral: true });
+          } else {
+            await interaction.followUp({ content: 'スレッド名の変更がキャンセルされました。変更する場合はもう一度「スレッド名を変更」ボタンを押してください。', ephemeral: true });
+          }
+        } else if (customId === 'delete_thread') {
+          const confirmationRow = new ActionRowBuilder()
+            .addComponents(
+              new ButtonBuilder()
+                .setCustomId('confirm_delete_thread')
+                .setLabel('削除します')
+                .setStyle(ButtonStyle.Danger)
+            );
+
+          await interaction.reply({ content: '本当にスレッドを削除しますか？この操作は取り消せません。', components: [confirmationRow], ephemeral: true });
+        } else if (customId === 'confirm_delete_thread') {
+          await thread.delete();
+          await interaction.reply({ content: 'スレッドが削除されました。', ephemeral: true });
+        }
+      } else {
+        await interaction.reply({ content: 'あなたにはこの操作を行う権限がありません。', ephemeral: true });
+      }
     }
   } catch (error) {
     console.error('エラーが発生しました', error);
   }
-});
-
-client.login(process.env['Discord']);
-
-//イベントコマンド
-const eventsPath = path.join(__dirname, 'events');
-const eventsFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
-
-for (const file of eventsFiles) {
-	const eventfilePath = path.join(eventsPath, file);
-	const event = require(eventfilePath);
-  if (event.once) {
-		client.once(event.name, (...args) => event.execute(...args));
-	} else {
-		client.on(event.name, (...args) => event.execute(...args));
-	}
-  console.log(`-> [Loaded Event] ${file.split('.')[0]}`);
-}
-
-client.on(Events.InteractionCreate, async interaction => {
-	if (!interaction.isChatInputCommand()) return;
-
-	const command = interaction.client.commands.get(interaction.commandName);
-
-	if (!command) {
-		console.error(`No command matching ${interaction.commandName} was found.`);
-		return;
-	}
-
-	try {
-		await command.execute(client,interaction);
-	} catch (error) {
-		console.error(error);
-		await interaction.reply({ content: 'コマンドがありません', ephemeral: true });
-	}
 });
 
 client.login(process.env.TOKEN);
