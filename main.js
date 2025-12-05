@@ -77,6 +77,49 @@ function getThreadCreator(threadId) {
   return data[threadId];
 }
 
+// 安全にチャンネルへ送信（チャンネルが消えている等のエラーを握りつぶす）
+async function safeSendChannel(channel, contentOrOptions) {
+  try {
+    if (!channel) return null;
+    return await channel.send(contentOrOptions);
+  } catch (err) {
+    if (err && err.code === 10003) {
+      console.warn('Unknown Channel — send skipped');
+      return null;
+    }
+    console.error('channel.send error', err);
+    return null;
+  }
+}
+
+// 安全に interaction.reply
+async function safeInteractionReply(interaction, options) {
+  try {
+    return await interaction.reply(options);
+  } catch (err) {
+    if (err && err.code === 10003) {
+      console.warn('Unknown Channel — interaction.reply skipped');
+      return null;
+    }
+    console.error('interaction.reply error', err);
+    return null;
+  }
+}
+
+// 安全に interaction.followUp
+async function safeInteractionFollowUp(interaction, options) {
+  try {
+    return await interaction.followUp(options);
+  } catch (err) {
+    if (err && err.code === 10003) {
+      console.warn('Unknown Channel — interaction.followUp skipped');
+      return null;
+    }
+    console.error('interaction.followUp error', err);
+    return null;
+  }
+}
+
 // スレッド作成に反応するロールID
 const triggerRoleIds = [
   "1174906387655041099", //カザネ鯖ロールID オープン募集
@@ -100,10 +143,20 @@ client.on("messageCreate", async (message) => {
     const threadName = message.content.replace(/<@&\d+>/g, '').trim();
 
     if (!threadName) {
-      const replyMessage = await message.reply({
-        content: "募集要項をメンションの後に付け足して再度メッセージを送信してください。",
-      });
-      setTimeout(() => replyMessage.delete(), 10000); // 5秒後に削除
+        const replyMessage = await message.reply({
+          content: "募集要項をメンションの後に付け足して再度メッセージを送信してください。",
+        });
+        setTimeout(async () => {
+          try {
+            if (replyMessage && typeof replyMessage.delete === 'function') await replyMessage.delete();
+          } catch (e) {
+            if (e && e.code === 10003) {
+              console.warn('Unknown Channel — delete skipped');
+            } else {
+              console.error('replyMessage.delete error', e);
+            }
+          }
+        }, 5000); // 5秒後に削除
       return;
     }
 
@@ -116,7 +169,7 @@ client.on("messageCreate", async (message) => {
 
       console.log(`スレッド作成: スレッド名 = ${thread.name}, 作成者 = ${message.author.tag} (${message.author.id}), 作成日時 = ${new Date().toLocaleString()}`);
 
-      await thread.send(`${message.author} がスレッドを開始しました。`);
+      await safeSendChannel(thread, `${message.author} がスレッドを開始しました。`);
       saveThreadCreator(thread.id, message.author.id);
 
       const actionRow = new ActionRowBuilder()
@@ -131,7 +184,7 @@ client.on("messageCreate", async (message) => {
             .setStyle(ButtonStyle.Danger)
         );
 
-      await thread.send({ content: '', components: [actionRow] });
+      await safeSendChannel(thread, { content: '', components: [actionRow] });
     } catch (error) {
       console.error("スレッド作成時にエラーが発生しました", error);
     }
@@ -172,34 +225,34 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (interaction.user.id === creatorId) {
         if (customId === 'rename_thread') {
-          await interaction.reply({ content: '新しいスレッド名をこのスレッドに送信してください。30秒後に自動的にキャンセルされます。', ephemeral: true });
+        await safeInteractionReply(interaction, { content: '新しいスレッド名をこのスレッドに送信してください。30秒後に自動的にキャンセルされます。', flags: 64 });
 
-          const filter = response => response.author.id === user.id;
-          const collected = await channel.awaitMessages({ filter, max: 1, time: 30000 });
+        const filter = response => response.author.id === user.id;
+        const collected = await channel.awaitMessages({ filter, max: 1, time: 30000 });
 
-          if (collected.size > 0) {
-            const newName = collected.first().content;
-            await thread.setName(newName);
+        if (collected.size > 0) {
+          const newName = collected.first().content;
+          try { await thread.setName(newName); } catch (e) { if (e && e.code === 10003) console.warn('Unknown Channel — setName skipped'); else console.error(e); }
 
-            console.log(`スレッド名が変更されました: 新しいスレッド名 = ${newName}`);
+          console.log(`スレッド名が変更されました: 新しいスレッド名 = ${newName}`);
 
-            await interaction.followUp({ content: `スレッド名が「${newName}」に変更されました。`, ephemeral: true });
-          } else {
-            await interaction.followUp({ content: 'スレッド名の変更がキャンセルされました。変更する場合はもう一度「スレッド名を変更」ボタンを押してください。', ephemeral: true });
-          }
+          await safeInteractionFollowUp(interaction, { content: `スレッド名が「${newName}」に変更されました。`, flags: 64 });
+        } else {
+          await safeInteractionFollowUp(interaction, { content: 'スレッド名の変更がキャンセルされました。変更する場合はもう一度「スレッド名を変更」ボタンを押してください。', flags: 64 });
+        }
         } else if (customId === 'delete_thread') {
-          const confirmationRow = new ActionRowBuilder()
-            .addComponents(
-              new ButtonBuilder()
-                .setCustomId('confirm_delete_thread')
-                .setLabel('削除します')
-                .setStyle(ButtonStyle.Danger)
-            );
+        const confirmationRow = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId('confirm_delete_thread')
+              .setLabel('削除します')
+              .setStyle(ButtonStyle.Danger)
+          );
 
-          await interaction.reply({ content: '本当にスレッドを削除しますか？この操作は取り消せません。', components: [confirmationRow], ephemeral: true });
+        await safeInteractionReply(interaction, { content: '本当にスレッドを削除しますか？この操作は取り消せません。', components: [confirmationRow], flags: 64 });
         } else if (customId === 'confirm_delete_thread') {
-          await thread.delete();
-          await interaction.reply({ content: 'スレッドが削除されました。', ephemeral: true });
+        try { await thread.delete(); } catch (e) { if (e && e.code === 10003) console.warn('Unknown Channel — delete skipped'); else console.error(e); }
+        await safeInteractionReply(interaction, { content: 'スレッドが削除されました。', flags: 64 });
         }
       } else {
         await interaction.reply({ content: 'あなたにはこの操作を行う権限がありません。', ephemeral: true });
