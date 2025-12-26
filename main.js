@@ -52,6 +52,7 @@ client.once(Events.ClientReady, () => {
 
 // データファイルパス
 const dataFilePath = './thread_creators.json';
+const pinnedMessagesFilePath = './pinned_messages.json';
 
 function loadThreadCreators() {
   if (!fs.existsSync(dataFilePath)) {
@@ -75,6 +76,50 @@ function saveThreadCreator(threadId, creatorId) {
 function getThreadCreator(threadId) {
   const data = loadThreadCreators();
   return data[threadId];
+}
+
+// 固定メッセージ管理関数
+function loadPinnedMessages() {
+  if (!fs.existsSync(pinnedMessagesFilePath)) {
+    return {}; 
+  }
+  const rawData = fs.readFileSync(pinnedMessagesFilePath);
+  return JSON.parse(rawData);
+}
+
+function savePinnedMessages(data) {
+  const jsonData = JSON.stringify(data, null, 4); 
+  fs.writeFileSync(pinnedMessagesFilePath, jsonData);
+}
+
+function savePinnedMessage(channelId, messageId, content, authorId) {
+  const data = loadPinnedMessages();
+  if (!data[channelId]) {
+    data[channelId] = [];
+  }
+  data[channelId].push({
+    messageId: messageId,
+    content: content,
+    authorId: authorId,
+    timestamp: new Date().toISOString()
+  });
+  savePinnedMessages(data);
+}
+
+function removePinnedMessage(channelId, messageId) {
+  const data = loadPinnedMessages();
+  if (data[channelId]) {
+    data[channelId] = data[channelId].filter(msg => msg.messageId !== messageId);
+    if (data[channelId].length === 0) {
+      delete data[channelId];
+    }
+    savePinnedMessages(data);
+  }
+}
+
+function getPinnedMessages(channelId) {
+  const data = loadPinnedMessages();
+  return data[channelId] || [];
 }
 
 // 安全にチャンネルへ送信（チャンネルが消えている等のエラーを握りつぶす）
@@ -131,6 +176,78 @@ const triggerRoleIds = [
   "1174908489341075537", //他ゲーム募集
   "1321113824924794974", //カザクラ
 ];
+
+// メッセージピン留め機能
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    if (user.bot) return;
+    
+    // リアクションが取得できていない場合はフェッチ
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch (error) {
+        console.error('リアクションのフェッチに失敗しました:', error);
+        return;
+      }
+    }
+
+    // 📌絵文字でピン留め
+    if (reaction.emoji.name === '📌') {
+      const message = reaction.message;
+      
+      try {
+        // メッセージをピン留め
+        if (!message.pinned) {
+          await message.pin();
+          savePinnedMessage(message.channel.id, message.id, message.content, message.author.id);
+          console.log(`メッセージがピン留めされました: チャンネル=${message.channel.name}, メッセージID=${message.id}, ピン留めしたユーザー=${user.tag}`);
+        }
+      } catch (error) {
+        console.error('メッセージのピン留めに失敗しました:', error);
+      }
+    }
+  } catch (error) {
+    console.error('MessageReactionAdd エラー:', error);
+  }
+});
+
+// メッセージピン解除機能
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  try {
+    if (user.bot) return;
+    
+    // リアクションが取得できていない場合はフェッチ
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch (error) {
+        console.error('リアクションのフェッチに失敗しました:', error);
+        return;
+      }
+    }
+
+    // 📌絵文字が全て削除されたらピン解除
+    if (reaction.emoji.name === '📌') {
+      const message = reaction.message;
+      
+      // 📌リアクションが0になったか確認
+      if (reaction.count === 0) {
+        try {
+          if (message.pinned) {
+            await message.unpin();
+            removePinnedMessage(message.channel.id, message.id);
+            console.log(`メッセージのピン留めが解除されました: チャンネル=${message.channel.name}, メッセージID=${message.id}`);
+          }
+        } catch (error) {
+          console.error('メッセージのピン解除に失敗しました:', error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('MessageReactionRemove エラー:', error);
+  }
+});
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
