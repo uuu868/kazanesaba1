@@ -98,7 +98,8 @@ function setAutoReply(channelId, message) {
   data[channelId] = {
     message: message,
     enabled: true,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    lastMessageId: null
   };
   saveAutoReplies(data);
 }
@@ -239,8 +240,35 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
       try {
         // メッセージをピン留め
         if (!message.pinned) {
+          // 既存のピン留めメッセージを取得
+          const existingPinnedMessages = getPinnedMessages(message.channel.id);
+          
+          // 古いピン留めメッセージを削除
+          for (const pinnedMsg of existingPinnedMessages) {
+            try {
+              const oldMessage = await message.channel.messages.fetch(pinnedMsg.messageId);
+              if (oldMessage && oldMessage.pinned) {
+                await oldMessage.unpin();
+                console.log(`古いピン留めメッセージを解除しました: メッセージID=${pinnedMsg.messageId}`);
+              }
+            } catch (error) {
+              console.error(`古いメッセージの取得またはピン解除に失敗しました: ${error}`);
+            }
+          }
+          
+          // 新しいメッセージをピン留め
           await message.pin();
-          savePinnedMessage(message.channel.id, message.id, message.content, message.author.id);
+          
+          // データをクリアして新しいメッセージのみを保存
+          const data = loadPinnedMessages();
+          data[message.channel.id] = [{
+            messageId: message.id,
+            content: message.content,
+            authorId: message.author.id,
+            timestamp: new Date().toISOString()
+          }];
+          savePinnedMessages(data);
+          
           console.log(`メッセージがピン留めされました: チャンネル=${message.channel.name}, メッセージID=${message.id}, ピン留めしたユーザー=${user.tag}`);
         }
       } catch (error) {
@@ -296,6 +324,20 @@ client.on("messageCreate", async (message) => {
   const autoReply = getAutoReply(message.channel.id);
   if (autoReply && autoReply.enabled && autoReply.embed) {
     try {
+      // 古い自動返信メッセージを削除
+      if (autoReply.lastMessageId) {
+        try {
+          const oldMessage = await message.channel.messages.fetch(autoReply.lastMessageId);
+          if (oldMessage) {
+            await oldMessage.delete();
+            console.log(`古い自動返信メッセージを削除しました: メッセージID=${autoReply.lastMessageId}`);
+          }
+        } catch (error) {
+          console.error(`古い自動返信メッセージの削除に失敗しました: ${error}`);
+        }
+      }
+      
+      // 新しい自動返信メッセージを送信
       const { EmbedBuilder } = require('discord.js');
       const embed = new EmbedBuilder()
         .setTitle(autoReply.embed.title)
@@ -306,7 +348,16 @@ client.on("messageCreate", async (message) => {
         embed.setFooter({ text: autoReply.embed.footer });
       }
       
-      await safeSendChannel(message.channel, { embeds: [embed] });
+      const sentMessage = await safeSendChannel(message.channel, { embeds: [embed] });
+      
+      // 送信したメッセージIDを保存
+      if (sentMessage) {
+        const data = loadAutoReplies();
+        if (data[message.channel.id]) {
+          data[message.channel.id].lastMessageId = sentMessage.id;
+          saveAutoReplies(data);
+        }
+      }
     } catch (error) {
       console.error('自動返信の送信に失敗しました:', error);
     }
