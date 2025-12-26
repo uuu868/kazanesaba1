@@ -53,6 +53,7 @@ client.once(Events.ClientReady, () => {
 // データファイルパス
 const dataFilePath = './thread_creators.json';
 const pinnedMessagesFilePath = './pinned_messages.json';
+const autoRepliesFilePath = './auto_replies.json';
 
 function loadThreadCreators() {
   if (!fs.existsSync(dataFilePath)) {
@@ -76,6 +77,45 @@ function saveThreadCreator(threadId, creatorId) {
 function getThreadCreator(threadId) {
   const data = loadThreadCreators();
   return data[threadId];
+}
+
+// 自動返信管理関数
+function loadAutoReplies() {
+  if (!fs.existsSync(autoRepliesFilePath)) {
+    return {}; 
+  }
+  const rawData = fs.readFileSync(autoRepliesFilePath);
+  return JSON.parse(rawData);
+}
+
+function saveAutoReplies(data) {
+  const jsonData = JSON.stringify(data, null, 4); 
+  fs.writeFileSync(autoRepliesFilePath, jsonData);
+}
+
+function setAutoReply(channelId, message) {
+  const data = loadAutoReplies();
+  data[channelId] = {
+    message: message,
+    enabled: true,
+    createdAt: new Date().toISOString()
+  };
+  saveAutoReplies(data);
+}
+
+function removeAutoReply(channelId) {
+  const data = loadAutoReplies();
+  delete data[channelId];
+  saveAutoReplies(data);
+}
+
+function getAutoReply(channelId) {
+  const data = loadAutoReplies();
+  return data[channelId];
+}
+
+function getAllAutoReplies() {
+  return loadAutoReplies();
 }
 
 // 固定メッセージ管理関数
@@ -251,6 +291,26 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+
+  // 自動返信機能をチェック（スレッド作成より先に実行）
+  const autoReply = getAutoReply(message.channel.id);
+  if (autoReply && autoReply.enabled && autoReply.embed) {
+    try {
+      const { EmbedBuilder } = require('discord.js');
+      const embed = new EmbedBuilder()
+        .setTitle(autoReply.embed.title)
+        .setDescription(autoReply.embed.description)
+        .setColor(autoReply.embed.color || '#0099ff');
+      
+      if (autoReply.embed.footer) {
+        embed.setFooter({ text: autoReply.embed.footer });
+      }
+      
+      await safeSendChannel(message.channel, { embeds: [embed] });
+    } catch (error) {
+      console.error('自動返信の送信に失敗しました:', error);
+    }
+  }
 
   const mentionedRoles = message.mentions.roles;
   const hasTriggerRole = triggerRoleIds.some((roleId) => mentionedRoles.has(roleId));
